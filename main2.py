@@ -52,36 +52,69 @@ def register_user(email: str, password: str):
         settings.JWT_CONFIG["ACCESS_TOKEN_EXPIRE_MINUTES"] * 60
     )
     
-    # Cache initial user profile
-    user_data = services.user.get_user(email)
-    redis_service.cache_data(f"profile:{user_id}", user_data.to_dict(orient="records")[0])
+    # Сохраняем сессионные данные
+    session_data = {
+        "user_id": str(user_id),
+        "email": email,
+        "last_login": datetime.now(timezone.utc).isoformat(),
+        "is_active": True
+    }
+    redis_service.store_session(
+        str(user_id),
+        session_data,
+        settings.JWT_CONFIG["ACCESS_TOKEN_EXPIRE_MINUTES"] * 60
+    )
     
     return {
         "message": "Registration is successful",
         "access_token": access_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "user_id": str(user_id)
     }
 
 
-@app.post("/token") #это одновременно логин и выдача токена
-def login_api (email: str, password: str):
-    if auth.auth(email,password):
+@app.post("/token")
+def login_api(email: str, password: str):
+    if auth.auth(email, password):
         access_token_expires = timedelta(minutes=settings.JWT_CONFIG["ACCESS_TOKEN_EXPIRE_MINUTES"])
         access_token = jwt.encode(
-            {"sub": email, "exp": datetime.now(timezone.utc) + access_token_expires}, settings.JWT_CONFIG["SECRET_KEY"], algorithm= settings.JWT_CONFIG["ALGORITHM"]
+            {"sub": email, "exp": datetime.now(timezone.utc) + access_token_expires},
+            settings.JWT_CONFIG["SECRET_KEY"],
+            algorithm=settings.JWT_CONFIG["ALGORITHM"]
         )
         
         # Store token in Redis
         user = services.user.get_user(email)
+        user_id = str(user["user_id"].item())
+        
+        # Сохраняем токен
         redis_service.store_token(
-            str(user["user_id"].item()),
+            user_id,
             access_token,
             settings.JWT_CONFIG["ACCESS_TOKEN_EXPIRE_MINUTES"] * 60
         )
         
-        return {"message": "Successful authorization", "access_token": access_token, "token_type": "bearer"}
+        # Сохраняем сессионные данные
+        session_data = {
+            "user_id": user_id,
+            "email": email,
+            "last_login": datetime.now(timezone.utc).isoformat(),
+            "is_active": True
+        }
+        redis_service.store_session(
+            user_id,
+            session_data,
+            settings.JWT_CONFIG["ACCESS_TOKEN_EXPIRE_MINUTES"] * 60
+        )
+        
+        return {
+            "message": "Successful authorization",
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user_id": user_id
+        }
     else:
-        raise HTTPException(status_code=400, detail = "Wrong email or password")
+        raise HTTPException(status_code=400, detail="Wrong email or password")
 
 async def get_current_user(token: str= Depends(oauth2_scheme)):
     credentials_exception = HTTPException(status_code= 401, detail="Invalid token")
@@ -116,7 +149,29 @@ def get_profile(user: dict = Depends(get_current_user)):
     redis_service.cache_data(f"profile:{user['user_id']}", profile_data)
     return profile_data
 
+@app.get("/session")
+async def get_session_data(user: dict = Depends(get_current_user)):
+    """Get session data for current user"""
+    try:
+        session_data = redis_service.get_session(str(user["user_id"]))
+        if not session_data:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return session_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/logout")
+async def logout(user: dict = Depends(get_current_user)):
+    """Logout user and clear session"""
+    try:
+        user_id = str(user["user_id"])
+        # Удаляем токен
+        redis_service.delete_token(user_id)
+        # Удаляем сессию
+        redis_service.redis_client.delete(f"session:{user_id}")
+        return {"message": "Successfully logged out"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 def login_page():
     st.title("Авторизация")

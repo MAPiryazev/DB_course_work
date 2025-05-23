@@ -38,6 +38,17 @@ def login():
                 streamlit.session_state["authenticated"] = True
                 streamlit.session_state["username"] = email
                 streamlit.session_state["token"] = data["access_token"]
+                streamlit.session_state["user_id"] = data["user_id"]
+                
+                # Получаем сессионные данные
+                session_response = requests.get(
+                    "http://127.0.0.1:8000/session",
+                    headers={"Authorization": f"Bearer {data['access_token']}"}
+                )
+                if session_response.status_code == 200:
+                    session_data = session_response.json()
+                    streamlit.session_state["session_data"] = session_data
+                
                 streamlit.success(f"Добро пожаловать, {email}!")
                 
                 # Получаем данные пользователя
@@ -49,7 +60,24 @@ def login():
                 streamlit.error("Неверная почта или пароль!")
         except Exception as e:
             streamlit.error(f"Ошибка при авторизации: {str(e)}")
-            
+
+def logout():
+    """Logout user and clear session"""
+    if "token" in streamlit.session_state:
+        try:
+            response = requests.post(
+                "http://127.0.0.1:8000/logout",
+                headers={"Authorization": f"Bearer {streamlit.session_state['token']}"}
+            )
+            if response.status_code == 200:
+                # Очищаем все данные сессии
+                for key in list(streamlit.session_state.keys()):
+                    del streamlit.session_state[key]
+                streamlit.session_state["authenticated"] = False
+                streamlit.rerun()
+        except Exception as e:
+            streamlit.error(f"Ошибка при выходе: {str(e)}")
+
 def register():
     streamlit.title("Регистрация")
     streamlit.write("Введите почту")
@@ -91,19 +119,22 @@ def register():
                     streamlit.error(f"Ошибка при регистрации: {str(e)}")
 
 def main():
-    if not streamlit.session_state["authenticated"]:
+    if not streamlit.session_state.get("authenticated", False):
         pg = streamlit.radio("Войдите или зарегистрируйтесь", ["Вход", "Регистрация"])
         if pg == "Вход":
             login()
         elif pg == "Регистрация":
             register()
-
     else:
-        if streamlit.session_state["admin"]:
-            print("admin mode enabled")
+        # Добавляем кнопку выхода в сайдбар
+        if streamlit.sidebar.button("Выйти"):
+            logout()
+            return
+
+        if streamlit.session_state.get("admin"):
             page = streamlit.sidebar.radio(
                 "Перейти к странице",
-                ["Профиль", "Магазин","Корзина", "Админ"],
+                ["Профиль", "Магазин", "Корзина", "Админ"],
             )
 
             if page == "Профиль":
@@ -118,7 +149,7 @@ def main():
         else:
             page = streamlit.sidebar.radio(
                 "Перейти к странице",
-                ["Профиль", "Магазин","Корзина"],
+                ["Профиль", "Магазин", "Корзина"],
             )
 
             if page == "Профиль":
