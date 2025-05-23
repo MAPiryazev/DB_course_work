@@ -92,32 +92,22 @@ class RedisService:
         try:
             # Store products as a hash for efficient updates
             for product in products_data:
-                # Get complete product details
-                product_details = products.get_product_details_by_id(product['product_id'])
-                if product_details:
-                    # Ensure all required fields are present
-                    required_fields = ['product_id', 'name', 'price', 'description', 
-                                     'warranty_period', 'stock_quantity', 'manufacturer_id']
-                    
-                    # Check if all required fields are present
-                    missing_fields = [field for field in required_fields if field not in product_details]
-                    if missing_fields:
-                        print(f"Warning: Missing fields in product {product['product_id']}: {missing_fields}")
-                        continue
-                        
-                    # Store complete product details
-                    self.redis_client.hset(
-                        f"product:{product['product_id']}",
-                        mapping=product_details
-                    )
-                    self.redis_client.expire(f"product:{product['product_id']}", ttl)
+                # Store basic product info (name and id)
+                self.redis_client.hset(
+                    f"product:{product['product_id']}",
+                    mapping={
+                        'product_id': product['product_id'],
+                        'name': product['name']
+                    }
+                )
+                self.redis_client.expire(f"product:{product['product_id']}", ttl)
             
             # Store product IDs list for quick access
             product_ids = [str(p['product_id']) for p in products_data]
             self.redis_client.sadd("products:all", *product_ids)
             self.redis_client.expire("products:all", ttl)
             
-            logger.info(f"Cached {len(products_data)} products with complete details")
+            logger.info(f"Cached {len(products_data)} products")
         except Exception as e:
             logger.error(f"Failed to cache products: {e}")
             raise
@@ -134,8 +124,11 @@ class RedisService:
             products = []
             for pid in product_ids:
                 product_data = self.redis_client.hgetall(f"product:{pid}")
-                if product_data:
-                    products.append(product_data)
+                if product_data and 'name' in product_data and 'product_id' in product_data:
+                    products.append({
+                        'name': product_data['name'],
+                        'product_id': int(product_data['product_id'])
+                    })
             
             return products
         except Exception as e:
