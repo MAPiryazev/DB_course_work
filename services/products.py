@@ -1,17 +1,31 @@
 from pandas import DataFrame
 import repositories.products
 import pandas as pd
+from services.redis_service import RedisService
+import json
 
+redis_service = RedisService()
 
 def fetch_product_names_and_ids() -> pd.DataFrame:
     try:
         print("Fetching product names and IDs...")
+        
+        # Try to get from cache first
+        cached_products = redis_service.get_cached_products()
+        if cached_products:
+            print("Retrieved products from cache")
+            return pd.DataFrame(cached_products)
+        
+        # If not in cache, get from database
         products = repositories.products.get_products_names_id()
-
+        
         if not products:
             print("No products found.")
             return pd.DataFrame(columns=["name", "product_id"])
-
+        
+        # Cache the results
+        redis_service.cache_products(products)
+        
         print(f"Received {len(products)} products.")
         return pd.DataFrame(products)
     except Exception as e:
@@ -25,12 +39,101 @@ def fetch_product_details_by_id(product_id: int) -> dict:
     :return: словарь которых хранит детализированную информацию.
     """
     try:
+        # Try to get from cache first
+        cached_product = redis_service.redis_client.hgetall(f"product:{product_id}")
+        print(f"DEBUG: Raw cached product data: {cached_product}")
+        
+        # Check if we have all required fields
+        required_fields = ['product_id', 'name', 'price', 'description', 
+                         'warranty_period', 'stock_quantity', 'manufacturer_id']
+        
+        if cached_product:
+            print(f"Retrieved product {product_id} from cache")
+            # Check if all required fields are present
+            missing_fields = [field for field in required_fields if field not in cached_product]
+            if missing_fields:
+                print(f"Warning: Missing fields in cache: {missing_fields}")
+                # Get fresh data from DB
+                product_details = repositories.products.get_product_details_by_id(product_id)
+                if product_details:
+                    # Convert reviews to string before caching
+                    if 'reviews' in product_details:
+                        product_details['reviews'] = json.dumps(product_details['reviews'])
+                    # Update cache with fresh data
+                    redis_service.redis_client.hset(f"product:{product_id}", mapping=product_details)
+                    redis_service.redis_client.expire(f"product:{product_id}", 3600)
+                    # Convert reviews back to list before returning
+                    if 'reviews' in product_details:
+                        product_details['reviews'] = json.loads(product_details['reviews'])
+                    return product_details
+                return {}
+            
+            # Convert numeric strings back to numbers
+            numeric_fields = {
+                'price': float,
+                'stock_quantity': int,
+                'warranty_period': int,
+                'product_id': int,
+                'manufacturer_id': int
+            }
+            
+            for field, converter in numeric_fields.items():
+                if field in cached_product:
+                    try:
+                        print(f"DEBUG: Converting field {field} from value: {cached_product[field]} (type: {type(cached_product[field])})")
+                        cached_product[field] = converter(cached_product[field])
+                        print(f"DEBUG: Converted {field} to: {cached_product[field]} (type: {type(cached_product[field])})")
+                    except (ValueError, TypeError) as e:
+                        print(f"Warning: Could not convert {field} to {converter.__name__}: {e}")
+                        # If conversion fails, get fresh data from DB
+                        print("DEBUG: Getting fresh data from DB due to conversion error")
+                        product_details = repositories.products.get_product_details_by_id(product_id)
+                        if product_details:
+                            print(f"DEBUG: Fresh data from DB: {product_details}")
+                            # Convert reviews to string before caching
+                            if 'reviews' in product_details:
+                                product_details['reviews'] = json.dumps(product_details['reviews'])
+                            # Update cache with fresh data
+                            redis_service.redis_client.hset(f"product:{product_id}", mapping=product_details)
+                            redis_service.redis_client.expire(f"product:{product_id}", 3600)
+                            # Convert reviews back to list before returning
+                            if 'reviews' in product_details:
+                                product_details['reviews'] = json.loads(product_details['reviews'])
+                            return product_details
+                        continue
+            
+            # Convert reviews from string back to list if present
+            if 'reviews' in cached_product:
+                try:
+                    cached_product['reviews'] = json.loads(cached_product['reviews'])
+                except json.JSONDecodeError:
+                    print("Warning: Could not parse reviews JSON")
+                    cached_product['reviews'] = []
+            
+            return cached_product
+        
+        # If not in cache, get from database
+        print("DEBUG: No data in cache, getting from DB")
         product_details = repositories.products.get_product_details_by_id(product_id)
-
+        
         if not product_details:
             print(f"No product found for ID: {product_id}")
             return {}
-
+        
+        print(f"DEBUG: Data from DB: {product_details}")
+        
+        # Convert reviews to string before caching
+        if 'reviews' in product_details:
+            product_details['reviews'] = json.dumps(product_details['reviews'])
+            
+        # Cache the result
+        redis_service.redis_client.hset(f"product:{product_id}", mapping=product_details)
+        redis_service.redis_client.expire(f"product:{product_id}", 3600)  # Cache for 1 hour
+        
+        # Convert reviews back to list before returning
+        if 'reviews' in product_details:
+            product_details['reviews'] = json.loads(product_details['reviews'])
+        
         print(f"Received product details for ID: {product_id}")
         return product_details
     except Exception as e:

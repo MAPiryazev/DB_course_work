@@ -2,6 +2,7 @@ import streamlit
 import pandas as pd
 from streamlit import session_state
 import requests
+import json
 
 from services.auth import Authotize
 import services.users
@@ -12,12 +13,45 @@ from pages.profile import show_profile_page
 from pages.store import show_store_page
 from pages.cart_page import show_cart_page
 from pages.admin import show_admin_page
-
+from services.redis_service import RedisService
+from components.notifications import init_notifications, start_notification_listener, show_notifications
 
 auth = Authotize()
 users = services.users.get_users()
 registr = services.regist.Registration()
+redis_service = RedisService()
 
+def check_existing_session():
+    """Check if there's an existing valid session in Redis"""
+    try:
+        # Get all session keys from Redis
+        session_keys = redis_service.redis_client.keys("session:*")
+        
+        for session_key in session_keys:
+            # Fix: Handle both string and bytes session keys
+            session_id = session_key.decode('utf-8').split(':')[1] if isinstance(session_key, bytes) else session_key.split(':')[1]
+            session_data = redis_service.get_session(session_id)
+            
+            if session_data and session_data.get('is_active'):
+                # Found active session, restore it
+                streamlit.session_state["authenticated"] = True
+                streamlit.session_state["username"] = session_data.get('email')
+                streamlit.session_state["user_id"] = session_data.get('user_id')
+                
+                # Get token
+                token = redis_service.get_token(str(session_data.get('user_id')))
+                if token:
+                    streamlit.session_state["token"] = token
+                    
+                    # Get user data
+                    user = services.user.get_user(session_data.get('email'))
+                    if user is not None:
+                        streamlit.session_state.user = user
+                        streamlit.session_state["admin"] = repositories.admin.get_admins(streamlit.session_state.user["user_id"].item())
+                        return True
+    except Exception as e:
+        streamlit.error(f"Ошибка при проверке сессии: {str(e)}")
+    return False
 
 def login():
     streamlit.title("Авторизация")
@@ -70,6 +104,10 @@ def logout():
                 headers={"Authorization": f"Bearer {streamlit.session_state['token']}"}
             )
             if response.status_code == 200:
+                # Clean up all sessions for this user
+                if "user_id" in streamlit.session_state:
+                    redis_service.cleanup_user_sessions(str(streamlit.session_state["user_id"]))
+                
                 # Очищаем все данные сессии
                 for key in list(streamlit.session_state.keys()):
                     del streamlit.session_state[key]
@@ -119,13 +157,27 @@ def register():
                     streamlit.error(f"Ошибка при регистрации: {str(e)}")
 
 def main():
+    # Initialize notifications
+    init_notifications()
+    
     if not streamlit.session_state.get("authenticated", False):
-        pg = streamlit.radio("Войдите или зарегистрируйтесь", ["Вход", "Регистрация"])
-        if pg == "Вход":
-            login()
-        elif pg == "Регистрация":
-            register()
+        # Check for existing session first
+        if check_existing_session():
+            streamlit.success("Сессия восстановлена!")
+            streamlit.rerun()
+        else:
+            pg = streamlit.radio("Войдите или зарегистрируйтесь", ["Вход", "Регистрация"])
+            if pg == "Вход":
+                login()
+            elif pg == "Регистрация":
+                register()
     else:
+        # Start notification listener if authenticated
+        start_notification_listener()
+        
+        # Show notifications
+        show_notifications()
+        
         # Добавляем кнопку выхода в сайдбар
         if streamlit.sidebar.button("Выйти"):
             logout()

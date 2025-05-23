@@ -1,8 +1,9 @@
 import redis
 import json
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 from settings import REDIS_CONFIG
 import logging
+from repositories import products
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +23,7 @@ class RedisService:
             self.redis_client.ping()
             logger.info("Successfully connected to Redis")
             self.pubsub = self.redis_client.pubsub()
+            self.pubsub.subscribe("order_status_changed")
         except redis.ConnectionError as e:
             logger.error(f"Failed to connect to Redis: {e}")
             raise
@@ -84,28 +86,156 @@ class RedisService:
             logger.error(f"Failed to get session {session_id}: {e}")
             raise
 
-    # Order status management
-    def update_order_status(self, order_id: str, status: str):
+    # Product caching
+    def cache_products(self, products_data: list, ttl: int = 3600):
+        """Cache products list with TTL"""
+        try:
+            # Store products as a hash for efficient updates
+            for product in products_data:
+                # Get complete product details
+                product_details = products.get_product_details_by_id(product['product_id'])
+                if product_details:
+                    # Ensure all required fields are present
+                    required_fields = ['product_id', 'name', 'price', 'description', 
+                                     'warranty_period', 'stock_quantity', 'manufacturer_id']
+                    
+                    # Check if all required fields are present
+                    missing_fields = [field for field in required_fields if field not in product_details]
+                    if missing_fields:
+                        print(f"Warning: Missing fields in product {product['product_id']}: {missing_fields}")
+                        continue
+                        
+                    # Store complete product details
+                    self.redis_client.hset(
+                        f"product:{product['product_id']}",
+                        mapping=product_details
+                    )
+                    self.redis_client.expire(f"product:{product['product_id']}", ttl)
+            
+            # Store product IDs list for quick access
+            product_ids = [str(p['product_id']) for p in products_data]
+            self.redis_client.sadd("products:all", *product_ids)
+            self.redis_client.expire("products:all", ttl)
+            
+            logger.info(f"Cached {len(products_data)} products with complete details")
+        except Exception as e:
+            logger.error(f"Failed to cache products: {e}")
+            raise
+
+    def get_cached_products(self) -> list:
+        """Get all cached products"""
+        try:
+            # Get all product IDs
+            product_ids = self.redis_client.smembers("products:all")
+            if not product_ids:
+                return []
+            
+            # Get all products data
+            products = []
+            for pid in product_ids:
+                product_data = self.redis_client.hgetall(f"product:{pid}")
+                if product_data:
+                    products.append(product_data)
+            
+            return products
+        except Exception as e:
+            logger.error(f"Failed to get cached products: {e}")
+            raise
+
+    # Cart caching
+    def cache_cart(self, user_id: str, cart_data: list, ttl: int = 1800):
+        """Cache user's cart data"""
+        try:
+            cart_key = f"cart:{user_id}"
+            # Store cart items as a hash
+            for item in cart_data:
+                # Convert datetime to string
+                if 'added_date' in item:
+                    item['added_date'] = item['added_date'].isoformat()
+                self.redis_client.hset(
+                    cart_key,
+                    str(item['product_id']),
+                    json.dumps(item)
+                )
+            self.redis_client.expire(cart_key, ttl)
+            logger.info(f"Cached cart for user {user_id}")
+        except Exception as e:
+            logger.error(f"Failed to cache cart: {e}")
+            raise
+
+    def get_cached_cart(self, user_id: str) -> list:
+        """Get user's cached cart"""
+        try:
+            cart_key = f"cart:{user_id}"
+            cart_data = self.redis_client.hgetall(cart_key)
+            if not cart_data:
+                return []
+            
+            result = []
+            for item in cart_data.values():
+                item_data = json.loads(item)
+                # Convert string back to datetime if needed
+                if 'added_date' in item_data:
+                    try:
+                        item_data['added_date'] = datetime.fromisoformat(item_data['added_date'])
+                    except (ValueError, TypeError):
+                        pass
+                result.append(item_data)
+            return result
+        except Exception as e:
+            logger.error(f"Failed to get cached cart: {e}")
+            raise
+
+    # Order status management with PubSub
+    def update_order_status(self, order_id: str, status: str, user_id: str = None):
         """Update order status and notify subscribers"""
         try:
+            # Store order status
             self.redis_client.set(f"order:{order_id}:status", status)
-            self.publish_event("order_status_changed", {
+            
+            # Publish status change event
+            event_data = {
                 "order_id": order_id,
-                "status": status
-            })
+                "status": status,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            if user_id:
+                event_data["user_id"] = user_id
+            
+            self.publish_event("order_status_changed", event_data)
+            
+            # If user_id provided, store in user's orders
+            if user_id:
+                self.redis_client.sadd(f"user:{user_id}:orders", order_id)
+            
             logger.info(f"Updated status for order {order_id} to {status}")
         except Exception as e:
-            logger.error(f"Failed to update status for order {order_id}: {e}")
+            logger.error(f"Failed to update order status: {e}")
             raise
 
     def get_order_status(self, order_id: str) -> str:
         """Get order status"""
         try:
-            status = self.redis_client.get(f"order:{order_id}:status")
-            logger.info(f"Retrieved status for order {order_id}")
-            return status
+            return self.redis_client.get(f"order:{order_id}:status")
         except Exception as e:
-            logger.error(f"Failed to get status for order {order_id}: {e}")
+            logger.error(f"Failed to get order status: {e}")
+            raise
+
+    def get_user_orders(self, user_id: str) -> list:
+        """Get all orders for a user"""
+        try:
+            order_ids = self.redis_client.smembers(f"user:{user_id}:orders")
+            orders = []
+            for order_id in order_ids:
+                status = self.get_order_status(order_id.decode('utf-8'))
+                if status:
+                    orders.append({
+                        "order_id": order_id.decode('utf-8'),
+                        "status": status.decode('utf-8')
+                    })
+            return orders
+        except Exception as e:
+            logger.error(f"Failed to get user orders: {e}")
             raise
 
     # Pub/Sub functionality
@@ -168,4 +298,43 @@ class RedisService:
             logger.info(f"Invalidated cache for key {key}")
         except Exception as e:
             logger.error(f"Failed to invalidate cache for key {key}: {e}")
+            raise
+
+    def close_pubsub(self):
+        """Properly close PubSub connection"""
+        try:
+            if self.pubsub:
+                self.pubsub.unsubscribe()
+                self.pubsub.close()
+                logger.info("Closed PubSub connection")
+        except Exception as e:
+            logger.error(f"Error closing PubSub connection: {e}")
+            raise
+
+    def cleanup_user_sessions(self, user_id: str) -> None:
+        """
+        Clean up all sessions for a specific user
+        :param user_id: The user ID to clean up sessions for
+        """
+        try:
+            # Get all session keys
+            session_keys = self.redis_client.keys("session:*")
+            
+            for session_key in session_keys:
+                # Get session data
+                session_data = self.redis_client.hgetall(session_key)
+                
+                # If session belongs to this user, delete it
+                if session_data.get('user_id') == user_id:
+                    self.redis_client.delete(session_key)
+            
+            # Also delete user's token
+            self.delete_token(user_id)
+            
+            # Close PubSub connection
+            self.close_pubsub()
+            
+            print(f"Cleaned up all sessions for user {user_id}")
+        except Exception as e:
+            print(f"Error cleaning up user sessions: {e}")
             raise 
