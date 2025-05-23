@@ -18,12 +18,14 @@ import services.user
 import services.regist
 import settings
 from services.auth import Authotize
+from services.redis_service import RedisService
 
 
 app = FastAPI()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
 registr = services.regist.Registration()
 auth = Authotize()
+redis_service = RedisService()
 API_URL="http://127.0.0.1:8000"
 
 
@@ -32,8 +34,33 @@ def register_user(email: str, password: str):
     users = services.users.get_users()
     if users["email"].isin([email]).any():
         raise HTTPException(status_code=400, detail="email already registered")
+    
     user_id = registr.registr(pd.DataFrame({"email": [email], "password": [password]}))
-    return {"message": "Registration is successful"}
+    
+    # Создаем токен для нового пользователя
+    access_token_expires = timedelta(minutes=settings.JWT_CONFIG["ACCESS_TOKEN_EXPIRE_MINUTES"])
+    access_token = jwt.encode(
+        {"sub": email, "exp": datetime.now(timezone.utc) + access_token_expires},
+        settings.JWT_CONFIG["SECRET_KEY"],
+        algorithm=settings.JWT_CONFIG["ALGORITHM"]
+    )
+    
+    # Store token in Redis
+    redis_service.store_token(
+        str(user_id),
+        access_token,
+        settings.JWT_CONFIG["ACCESS_TOKEN_EXPIRE_MINUTES"] * 60
+    )
+    
+    # Cache initial user profile
+    user_data = services.user.get_user(email)
+    redis_service.cache_data(f"profile:{user_id}", user_data.to_dict(orient="records")[0])
+    
+    return {
+        "message": "Registration is successful",
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
 
 
 @app.post("/token") #это одновременно логин и выдача токена
@@ -43,6 +70,15 @@ def login_api (email: str, password: str):
         access_token = jwt.encode(
             {"sub": email, "exp": datetime.now(timezone.utc) + access_token_expires}, settings.JWT_CONFIG["SECRET_KEY"], algorithm= settings.JWT_CONFIG["ALGORITHM"]
         )
+        
+        # Store token in Redis
+        user = services.user.get_user(email)
+        redis_service.store_token(
+            str(user["user_id"].item()),
+            access_token,
+            settings.JWT_CONFIG["ACCESS_TOKEN_EXPIRE_MINUTES"] * 60
+        )
+        
         return {"message": "Successful authorization", "access_token": access_token, "token_type": "bearer"}
     else:
         raise HTTPException(status_code=400, detail = "Wrong email or password")
@@ -54,6 +90,13 @@ async def get_current_user(token: str= Depends(oauth2_scheme)):
         email = payload.get("sub")
         if email is None:
             raise credentials_exception
+            
+        # Verify token in Redis
+        user = services.user.get_user(email)
+        stored_token = redis_service.get_token(str(user["user_id"].item()))
+        if not stored_token or stored_token != token:
+            raise credentials_exception
+            
     except JWTError:
         raise credentials_exception
 
@@ -64,7 +107,14 @@ async def get_current_user(token: str= Depends(oauth2_scheme)):
 
 @app.get("/profile")
 def get_profile(user: dict = Depends(get_current_user)):
-    return user
+    # Cache user profile data
+    cached_profile = redis_service.get_cached_data(f"profile:{user['user_id']}")
+    if cached_profile:
+        return cached_profile
+        
+    profile_data = user
+    redis_service.cache_data(f"profile:{user['user_id']}", profile_data)
+    return profile_data
 
 
 
@@ -80,6 +130,13 @@ def login_page():
             data = response.json()
             st.session_state["token"] = data["access_token"]
             st.session_state["authenticated"] = True
+            
+            # Store session in Redis
+            redis_service.store_session(
+                st.session_state["token"],
+                {"email": email, "authenticated": True}
+            )
+            
             st.success("Вы успешно вошли!")
         else:
             st.error("Неверный email или пароль")
@@ -91,6 +148,13 @@ def profile():
 
     if "token" not in st.session_state:
         st.error("Сначала войдите в систему")
+        return
+
+    # Check session in Redis
+    session_data = redis_service.get_session(st.session_state["token"])
+    if not session_data:
+        st.error("Сессия истекла. Пожалуйста, войдите снова.")
+        st.session_state["authenticated"] = False
         return
 
     headers = {"Authorization": f"Bearer {st.session_state['token']}"}

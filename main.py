@@ -1,6 +1,7 @@
 import streamlit
 import pandas as pd
 from streamlit import session_state
+import requests
 
 from services.auth import Authotize
 import services.users
@@ -25,16 +26,29 @@ def login():
     email = streamlit.text_input("Почта")
     password = streamlit.text_input("Пароль", type="password")
     if streamlit.button("Войти"):
-        if auth.auth(email, password):
-            streamlit.session_state["authenticated"] = True
-            streamlit.session_state["username"] = email
-            streamlit.success(f"Добро пожаловать, {email}!")
-            streamlit.session_state.user = services.user.get_user(email)
-            streamlit.session_state["admin"] = repositories.admin.get_admins(streamlit.session_state.user["user_id"].item())
-            print(streamlit.session_state["admin"])
-            streamlit.rerun()
-        else:
-            streamlit.error("Неверная почта или пароль!")
+        try:
+            # Используем API endpoint для авторизации
+            response = requests.post(
+                "http://127.0.0.1:8000/token",
+                params={"email": email, "password": password}
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                streamlit.session_state["authenticated"] = True
+                streamlit.session_state["username"] = email
+                streamlit.session_state["token"] = data["access_token"]
+                streamlit.success(f"Добро пожаловать, {email}!")
+                
+                # Получаем данные пользователя
+                user = services.user.get_user(email)
+                streamlit.session_state.user = user
+                streamlit.session_state["admin"] = repositories.admin.get_admins(streamlit.session_state.user["user_id"].item())
+                streamlit.rerun()
+            else:
+                streamlit.error("Неверная почта или пароль!")
+        except Exception as e:
+            streamlit.error(f"Ошибка при авторизации: {str(e)}")
             
 def register():
     streamlit.title("Регистрация")
@@ -45,7 +59,6 @@ def register():
     streamlit.write("Подтвердите пароль")
     second_password = streamlit.text_input("Подтверждение пароля", type="password")
 
-
     if streamlit.button("Зарегистрироваться"):
         if (not(email) or not(password) or not(second_password)):
             streamlit.error("Введите требуемые значения!")
@@ -53,17 +66,29 @@ def register():
             if (password != second_password):
                 streamlit.error("Пароли не совпадают!")
             else:
-                if users["email"].isin([email]).any():
-                    streamlit.error("Данная почта уже зарегистрирована!")
-                else:
-                    streamlit.success("Успешная регистрация")
-                    streamlit.session_state["authenticated"] = True
-                    #user = pd.DataFrame({"nickname" : nickname, "email" : email, "password" : password})
-                    user_id = registr.registr(pd.DataFrame({"email": [email], "password": [password]}))
-                    #user["user_id"] = user_id
-                    user = pd.DataFrame({"user_id": [user_id], "email": [email], "password": [password]})
-                    streamlit.session_state.user = user
-                    streamlit.rerun()
+                try:
+                    # Используем API endpoint для регистрации
+                    response = requests.post(
+                        "http://127.0.0.1:8000/register",
+                        params={"email": email, "password": password}
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        streamlit.success("Успешная регистрация")
+                        streamlit.session_state["authenticated"] = True
+                        streamlit.session_state["username"] = email
+                        streamlit.session_state["token"] = data["access_token"]
+                        
+                        # Получаем данные пользователя
+                        user = services.user.get_user(email)
+                        streamlit.session_state.user = user
+                        streamlit.rerun()
+                    else:
+                        error_data = response.json()
+                        streamlit.error(error_data.get("detail", "Ошибка при регистрации"))
+                except Exception as e:
+                    streamlit.error(f"Ошибка при регистрации: {str(e)}")
 
 def main():
     if not streamlit.session_state["authenticated"]:

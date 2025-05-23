@@ -11,6 +11,13 @@ DB_CONFIG = {
     "port": os.getenv("DB_PORT"),
 }
 
+REDIS_CONFIG = {
+    "host": os.getenv("REDIS_HOST", "localhost"),
+    "port": int(os.getenv("REDIS_PORT", 6379)),
+    "db": int(os.getenv("REDIS_DB", 0)),
+    "password": os.getenv("REDIS_PASSWORD", "redis_password"),
+}
+
 JWT_CONFIG = {
     "SECRET_KEY": os.getenv("SECRET_KEY"),
     "ALGORITHM": os.getenv("ALGORITHM"),
