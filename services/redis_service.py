@@ -26,11 +26,11 @@ class RedisService:
             # Инициализация PubSub
             self.pubsub = self.redis_client.pubsub()
             try:
-                logger.info("Attempting to subscribe to order_status_changed channel")
-                self.pubsub.subscribe("order_status_changed")
-                logger.info("Successfully subscribed to order_status_changed channel")
+                logger.info("Attempting to subscribe to channels")
+                self.pubsub.subscribe("order_status_changed", "admin_notifications")
+                logger.info("Successfully subscribed to channels")
             except Exception as e:
-                logger.error(f"Failed to subscribe to order_status_changed: {e}")
+                logger.error(f"Failed to subscribe to channels: {e}")
                 # Не прерываем выполнение, так как это не критическая ошибка
         except redis.ConnectionError as e:
             logger.error(f"Failed to connect to Redis: {e}")
@@ -245,6 +245,7 @@ class RedisService:
     def publish_event(self, channel: str, message: dict):
         """Publish event to channel"""
         try:
+            logger.debug(f"Publishing to channel {channel}: {message}")
             self.redis_client.publish(channel, json.dumps(message))
             logger.info(f"Published message to channel {channel}")
         except Exception as e:
@@ -359,4 +360,31 @@ class RedisService:
             print(f"Cleaned up all sessions for user {user_id}")
         except Exception as e:
             print(f"Error cleaning up user sessions: {e}")
+            raise
+
+    def notify_admin_low_stock(self, product_id: int, product_name: str, current_stock: int, threshold: int = 5):
+        """Send notification to admin about low stock"""
+        try:
+            event_data = {
+                "type": "low_stock",
+                "product_id": product_id,
+                "product_name": product_name,
+                "current_stock": current_stock,
+                "threshold": threshold,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+            logger.info(f"Sending low stock notification for product {product_name}")
+            logger.debug(f"Notification data: {event_data}")
+            
+            # Проверяем, что PubSub все еще активен
+            if not hasattr(self, 'pubsub') or not self.pubsub:
+                logger.warning("PubSub connection lost, attempting to reconnect...")
+                self.pubsub = self.redis_client.pubsub()
+                self.pubsub.subscribe("order_status_changed", "admin_notifications")
+            
+            self.publish_event("admin_notifications", event_data)
+            logger.info("Low stock notification sent successfully")
+        except Exception as e:
+            logger.error(f"Failed to send low stock notification: {e}")
             raise 

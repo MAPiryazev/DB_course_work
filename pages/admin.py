@@ -12,8 +12,27 @@ from services.order_status import STATUS_MAPPING, REVERSE_STATUS_MAPPING
 # Инициализация Redis сервиса
 redis_service = RedisService()
 
+def check_low_stock_products():
+    """Check for products with low stock and notify admin"""
+    try:
+        products_df = services.products.fetch_product_names_and_ids()
+        if not products_df.empty:
+            for _, product in products_df.iterrows():
+                stock = services.products.check_product_stock(product['product_id'])
+                if stock <= 5:  # Порог низкого количества
+                    redis_service.notify_admin_low_stock(
+                        product['product_id'],
+                        product['name'],
+                        stock
+                    )
+    except Exception as e:
+        st.error(f"Ошибка при проверке количества товаров: {e}")
+
 def show_admin_page():
     st.title("Панель администратора")
+
+    # Проверяем количество товаров при загрузке страницы
+    check_low_stock_products()
 
     # Отображение всех заказов
     st.header("Управление заказами")
@@ -109,6 +128,22 @@ def show_admin_page():
             try:
                 current_stock = services.products.check_product_stock(product_id)
                 services.products.reduce_product_stock(product_id, current_stock - new_stock_quantity)
+                
+                # Проверяем, не стало ли количество низким после обновления
+                if new_stock_quantity <= 5:
+                    # Получаем информацию о товаре
+                    product_info = services.products.fetch_product_names_and_ids()
+                    product_name = product_info[product_info['product_id'] == product_id]['name'].iloc[0]
+                    
+                    # Отправляем уведомление
+                    redis_service.notify_admin_low_stock(
+                        product_id=product_id,
+                        product_name=product_name,
+                        current_stock=new_stock_quantity
+                    )
+                    # Даем время на обработку уведомления
+                    time.sleep(0.5)
+                
                 st.success("Количество успешно обновлено.")
                 time.sleep(0.5)
                 st.rerun()

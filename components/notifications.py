@@ -45,7 +45,8 @@ class NotificationHandler:
 
             if message['type'] == 'order_status_changed':
                 self._handle_order_status_change(message)
-            # Добавьте другие типы уведомлений здесь
+            elif message['type'] == 'low_stock':
+                self._handle_low_stock_notification(message)
         except Exception as e:
             logger.error(f"Error handling notification: {e}")
 
@@ -69,6 +70,24 @@ class NotificationHandler:
                 logger.info(f"Displayed notification for order {order_id} status change to {status_ru}")
         except Exception as e:
             logger.error(f"Error handling order status change: {e}")
+
+    def _handle_low_stock_notification(self, message):
+        """Handle low stock notification"""
+        try:
+            product_name = message.get('product_name')
+            current_stock = message.get('current_stock')
+            threshold = message.get('threshold')
+
+            if not all([product_name, current_stock, threshold]):
+                logger.error("Missing required fields in low stock notification")
+                return
+
+            # Проверяем, является ли пользователь админом
+            if st.session_state.get('admin'):
+                st.toast(f"⚠️ Внимание! Товар '{product_name}' заканчивается. Осталось: {current_stock} шт.")
+                logger.info(f"Displayed low stock notification for product {product_name}")
+        except Exception as e:
+            logger.error(f"Error handling low stock notification: {e}")
 
 def init_notifications():
     """Initialize notifications in session state"""
@@ -94,46 +113,65 @@ def add_notification(message: str, type: str = "info"):
 def notification_listener():
     """Listen for notifications from Redis PubSub"""
     try:
+        logger.info("Starting notification listener...")
         while True:
-            message = redis_service.get_message()
-            if message and message['type'] == 'message':
-                try:
-                    data = json.loads(message['data'])
-                    if data.get('type') == 'order_status_changed':
-                        # Преобразуем статус в русский
-                        status_mapping = {
-                            "Pending": "В обработке",
-                            "Processing": "В обработке",
-                            "Confirmed": "Подтвержден",
-                            "Shipped": "Отправлен",
-                            "Delivered": "Доставлен",
-                            "Cancelled": "Отменен"
-                        }
-                        status_ru = status_mapping.get(data['status'], data['status'])
-                        add_notification(
-                            f"Статус заказа {data['order_id']} изменен на {status_ru}",
-                            "success"
-                        )
-                except json.JSONDecodeError:
-                    continue
+            try:
+                message = redis_service.get_message()
+                if message:
+                    logger.debug(f"Received message: {message}")
+                    if message['type'] == 'message':
+                        try:
+                            data = json.loads(message['data'])
+                            logger.debug(f"Parsed message data: {data}")
+                            
+                            if data.get('type') == 'order_status_changed':
+                                # Преобразуем статус в русский
+                                status_mapping = {
+                                    "Pending": "В обработке",
+                                    "Processing": "В обработке",
+                                    "Confirmed": "Подтвержден",
+                                    "Shipped": "Отправлен",
+                                    "Delivered": "Доставлен",
+                                    "Cancelled": "Отменен"
+                                }
+                                status_ru = status_mapping.get(data['status'], data['status'])
+                                add_notification(
+                                    f"Статус заказа {data['order_id']} изменен на {status_ru}",
+                                    "success"
+                                )
+                                logger.info(f"Added order status notification: {data['order_id']}")
+                            elif data.get('type') == 'low_stock':
+                                notification_text = f"⚠️ Внимание! Товар '{data['product_name']}' заканчивается. Осталось: {data['current_stock']} шт."
+                                add_notification(notification_text, "warning")
+                                logger.info(f"Added low stock notification for product: {data['product_name']}")
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Failed to decode message: {e}")
+                            continue
+            except Exception as e:
+                logger.error(f"Error in notification loop: {e}")
+                time.sleep(1)  # Пауза перед следующей попыткой
     except Exception as e:
-        print(f"Error in notification listener: {e}")
+        logger.error(f"Fatal error in notification listener: {e}")
         # Try to reconnect
         try:
+            logger.info("Attempting to reconnect...")
             redis_service.close_pubsub()
             redis_service.pubsub = redis_service.redis_client.pubsub()
-            redis_service.pubsub.subscribe("order_status_changed")
+            redis_service.pubsub.subscribe("order_status_changed", "admin_notifications")
+            logger.info("Successfully reconnected")
         except Exception as reconnect_error:
-            print(f"Failed to reconnect: {reconnect_error}")
+            logger.error(f"Failed to reconnect: {reconnect_error}")
 
 def start_notification_listener():
     """Start notification listener in a separate thread"""
     if "notification_thread" not in st.session_state:
+        logger.info("Starting new notification thread")
         st.session_state.notification_thread = threading.Thread(
             target=notification_listener,
             daemon=True
         )
         st.session_state.notification_thread.start()
+        logger.info("Notification thread started")
 
 def show_notifications():
     """Show notifications in the UI"""
