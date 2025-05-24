@@ -3,6 +3,7 @@ import pandas as pd
 from streamlit import session_state
 import requests
 import json
+import logging
 
 from services.auth import Authotize
 import services.users
@@ -15,6 +16,10 @@ from pages.cart_page import show_cart_page
 from pages.admin import show_admin_page
 from services.redis_service import RedisService
 from components.notifications import init_notifications, start_notification_listener, show_notifications
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 auth = Authotize()
 users = services.users.get_users()
@@ -157,60 +162,60 @@ def register():
                     streamlit.error(f"Ошибка при регистрации: {str(e)}")
 
 def main():
-    # Initialize notifications
-    init_notifications()
-    
-    if not streamlit.session_state.get("authenticated", False):
-        # Check for existing session first
-        if check_existing_session():
-            streamlit.success("Сессия восстановлена!")
-            streamlit.rerun()
-        else:
-            pg = streamlit.radio("Войдите или зарегистрируйтесь", ["Вход", "Регистрация"])
-            if pg == "Вход":
-                login()
-            elif pg == "Регистрация":
-                register()
-    else:
-        # Start notification listener if authenticated
-        start_notification_listener()
+    try:
+        # Initialize notifications
+        init_notifications()
         
-        # Show notifications
-        show_notifications()
-        
-        # Добавляем кнопку выхода в сайдбар
-        if streamlit.sidebar.button("Выйти"):
-            logout()
-            return
-
-        if streamlit.session_state.get("admin"):
-            page = streamlit.sidebar.radio(
-                "Перейти к странице",
-                ["Профиль", "Магазин", "Корзина", "Админ"],
-            )
-
-            if page == "Профиль":
-                show_profile_page()
-            if page == "Магазин":
-                show_store_page()
-            if page == "Корзина":
-                show_cart_page()
-            if page == "Админ":
-                show_admin_page()
-
+        if not streamlit.session_state.get("authenticated", False):
+            # Check for existing session first
+            if check_existing_session():
+                streamlit.success("Сессия восстановлена!")
+                streamlit.rerun()
+            else:
+                pg = streamlit.radio("Войдите или зарегистрируйтесь", ["Вход", "Регистрация"])
+                if pg == "Вход":
+                    login()
+                elif pg == "Регистрация":
+                    register()
         else:
-            page = streamlit.sidebar.radio(
-                "Перейти к странице",
-                ["Профиль", "Магазин", "Корзина"],
-            )
+            # Показываем уведомления
+            show_notifications()
+            
+            # Добавляем кнопку выхода в сайдбар
+            if streamlit.sidebar.button("Выйти"):
+                logout()
+                return
 
-            if page == "Профиль":
-                show_profile_page()
-            if page == "Магазин":
-                show_store_page()
-            if page == "Корзина":
-                show_cart_page()
+            if streamlit.session_state.get("admin"):
+                page = streamlit.sidebar.radio(
+                    "Перейти к странице",
+                    ["Профиль", "Магазин", "Корзина", "Админ"],
+                )
 
+                if page == "Профиль":
+                    show_profile_page()
+                if page == "Магазин":
+                    show_store_page()
+                if page == "Корзина":
+                    show_cart_page()
+                if page == "Админ":
+                    show_admin_page()
+
+            else:
+                page = streamlit.sidebar.radio(
+                    "Перейти к странице",
+                    ["Профиль", "Магазин", "Корзина"],
+                )
+
+                if page == "Профиль":
+                    show_profile_page()
+                if page == "Магазин":
+                    show_store_page()
+                if page == "Корзина":
+                    show_cart_page()
+    except Exception as e:
+        logger.error(f"Unexpected error in main: {e}")
+        streamlit.error("Произошла непредвиденная ошибка. Пожалуйста, попробуйте позже.")
 
 if "authenticated" not in streamlit.session_state:
     streamlit.session_state["authenticated"] = False

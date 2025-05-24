@@ -2,6 +2,10 @@ import pandas as pd
 import streamlit as st
 import time
 import services.user
+import services.orders
+import logging
+
+logger = logging.getLogger(__name__)
 
 def show_profile_page():
     st.title("Ваш профиль")
@@ -26,7 +30,6 @@ def show_profile_page():
         time.sleep(0.5)
         st.rerun()
 
-
     # Инициализация состояния
     if 'show_balance_input' not in st.session_state:
         st.session_state['show_balance_input'] = False
@@ -50,3 +53,43 @@ def show_profile_page():
                 st.rerun()
             except Exception as e:
                 st.error(f"Ошибка: {e}")
+
+    # Добавляем раздел с заказами
+    st.divider()
+    st.markdown("### 📦 Мои заказы")
+    
+    try:
+        # Получаем ID пользователя
+        user_info = services.user.get_user(email)
+        if user_info.empty:
+            st.error("Пользователь не найден.")
+            return
+            
+        user_id = int(user_info['user_id'].iloc[0])
+        
+        # Получаем заказы пользователя
+        orders_df = services.orders.get_user_orders(user_id)
+        
+        if orders_df.empty:
+            st.info("У вас пока нет заказов.")
+        else:
+            # Отображаем заказы
+            for index, order in orders_df.iterrows():
+                with st.expander(f"Заказ #{order['order_id']} - {order['status']}"):
+                    st.write(f"Дата заказа: {order['order_date']}")
+                    
+                    # Добавляем цветовую индикацию статуса с учетом английских названий
+                    status_colors = {
+                        "Pending": "🟡 В обработке",
+                        "Processing": "🟡 В обработке",
+                        "Confirmed": "🔵 Подтвержден",
+                        "Shipped": "🟢 Отправлен",
+                        "Delivered": "✅ Доставлен",
+                        "Cancelled": "❌ Отменен"
+                    }
+                    status_display = status_colors.get(order['status'], f"⚪ {order['status']}")
+                    st.write(f"Статус: {status_display}")
+                    
+    except Exception as e:
+        logger.error(f"Error loading orders: {e}")
+        st.error("Произошла ошибка при загрузке заказов. Пожалуйста, попробуйте позже.")

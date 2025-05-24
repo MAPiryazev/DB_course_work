@@ -22,8 +22,16 @@ class RedisService:
             # Проверка подключения
             self.redis_client.ping()
             logger.info("Successfully connected to Redis")
+            
+            # Инициализация PubSub
             self.pubsub = self.redis_client.pubsub()
-            self.pubsub.subscribe("order_status_changed")
+            try:
+                logger.info("Attempting to subscribe to order_status_changed channel")
+                self.pubsub.subscribe("order_status_changed")
+                logger.info("Successfully subscribed to order_status_changed channel")
+            except Exception as e:
+                logger.error(f"Failed to subscribe to order_status_changed: {e}")
+                # Не прерываем выполнение, так как это не критическая ошибка
         except redis.ConnectionError as e:
             logger.error(f"Failed to connect to Redis: {e}")
             raise
@@ -183,6 +191,7 @@ class RedisService:
     def update_order_status(self, order_id: str, status: str, user_id: str = None):
         """Update order status and notify subscribers"""
         try:
+            logger.info(f"Updating order {order_id} status to {status}")
             # Store order status
             self.redis_client.set(f"order:{order_id}:status", status)
             
@@ -195,13 +204,14 @@ class RedisService:
             if user_id:
                 event_data["user_id"] = user_id
             
+            logger.debug(f"Publishing event with data: {event_data}")
             self.publish_event("order_status_changed", event_data)
             
             # If user_id provided, store in user's orders
             if user_id:
                 self.redis_client.sadd(f"user:{user_id}:orders", order_id)
             
-            logger.info(f"Updated status for order {order_id} to {status}")
+            logger.info(f"Successfully updated status for order {order_id} to {status}")
         except Exception as e:
             logger.error(f"Failed to update order status: {e}")
             raise
@@ -254,12 +264,20 @@ class RedisService:
         """Get message from subscribed channels"""
         try:
             message = self.pubsub.get_message()
-            if message and message['type'] == 'message':
-                logger.info(f"Received message from channel {message['channel']}")
-            return message
+            if message:
+                logger.debug(f"Received message: {message}")
+                if message['type'] == 'message':
+                    try:
+                        data = json.loads(message['data'])
+                        logger.info(f"Received message from channel {message['channel']}: {data}")
+                        return data
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to decode message data: {e}")
+                        return None
+            return None
         except Exception as e:
             logger.error(f"Failed to get message: {e}")
-            raise
+            return None
 
     # Cache management
     def cache_data(self, key: str, data: dict, ttl: int = 300):
@@ -294,15 +312,26 @@ class RedisService:
             raise
 
     def close_pubsub(self):
-        """Properly close PubSub connection"""
+        """Safely close PubSub connection"""
         try:
-            if self.pubsub:
+            if hasattr(self, 'pubsub') and self.pubsub:
+                logger.info("Attempting to close PubSub connection")
                 self.pubsub.unsubscribe()
                 self.pubsub.close()
-                logger.info("Closed PubSub connection")
+                logger.info("PubSub connection closed successfully")
         except Exception as e:
-            logger.error(f"Error closing PubSub connection: {e}")
-            raise
+            logger.error(f"Error while closing PubSub connection: {e}")
+
+    def __del__(self):
+        """Destructor to ensure connections are closed"""
+        logger.info("Cleaning up Redis connections")
+        self.close_pubsub()
+        if hasattr(self, 'redis_client'):
+            try:
+                self.redis_client.close()
+                logger.info("Redis client connection closed")
+            except Exception as e:
+                logger.error(f"Error while closing Redis connection: {e}")
 
     def cleanup_user_sessions(self, user_id: str) -> None:
         """
