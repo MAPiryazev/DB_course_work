@@ -5,10 +5,14 @@ from thefuzz import fuzz, process
 import services.user
 import services.products
 import logging
+from services.redis_service import RedisService
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Создаем экземпляр RedisService
+redis_service = RedisService()
 
 def show_store_page():
     try:
@@ -23,6 +27,16 @@ def show_store_page():
         st.subheader("Поиск товаров")
         search_query = st.text_input("Введите название товара:", "")
 
+        # Очищаем кеш предыдущего поиска при новом запросе
+        if 'last_search_query' not in st.session_state:
+            st.session_state.last_search_query = ""
+        
+        if search_query != st.session_state.last_search_query:
+            st.session_state.last_search_query = search_query
+            # Очищаем кеш предыдущего поиска
+            if st.session_state.last_search_query:
+                redis_service.clear_temporary_data(f"search:{st.session_state.last_search_query}")
+
         # Получение списка товаров с обработкой ошибок
         try:
             products_df = services.products.fetch_product_names_and_ids()
@@ -34,16 +48,71 @@ def show_store_page():
         # Фильтрация товаров с учетом поиска
         if search_query.strip():
             try:
-                # Использование thefuzz для поиска похожих товаров
-                product_names = products_df['name'].tolist()
-                matches = process.extract(search_query, product_names, scorer=fuzz.partial_ratio, limit=10)
-
-                # Список совпадений
-                matched_product_names = [match[0] for match in matches if match[1] > 50]
-                if matched_product_names:
-                    filtered_products = products_df[products_df['name'].isin(matched_product_names)]
+                # Проверяем кеш поиска
+                search_cache_key = f"search:{search_query}"
+                logger.info(f"Проверка кеша поиска для запроса: {search_query}")
+                cached_results = redis_service.get_temporary_data(search_cache_key)
+                
+                if cached_results:
+                    logger.info(f"Найдены кешированные результаты для запроса: {search_query}")
+                    # Проверяем структуру кешированных данных и преобразуем их в нужный формат
+                    if isinstance(cached_results, list) and len(cached_results) > 0:
+                        try:
+                            # Преобразуем список словарей в DataFrame
+                            filtered_products = pd.DataFrame(cached_results)
+                            # Убеждаемся, что у нас есть необходимые колонки
+                            if 'name' not in filtered_products.columns or 'product_id' not in filtered_products.columns:
+                                logger.warning("Кешированные данные не содержат необходимых полей, выполняем новый поиск")
+                                filtered_products = pd.DataFrame()
+                        except Exception as e:
+                            logger.error(f"Ошибка при обработке кешированных данных: {e}")
+                            filtered_products = pd.DataFrame()
+                    else:
+                        logger.warning("Некорректный формат кешированных данных, выполняем новый поиск")
+                        filtered_products = pd.DataFrame()
                 else:
-                    filtered_products = pd.DataFrame()
+                    logger.info(f"Кеш не найден, выполняем поиск для запроса: {search_query}")
+                    # Использование thefuzz для поиска похожих товаров
+                    product_names = products_df['name'].tolist()
+                    matches = process.extract(search_query, product_names, scorer=fuzz.partial_ratio, limit=10)
+
+                    # Список совпадений
+                    matched_product_names = [match[0] for match in matches if match[1] > 50]
+                    if matched_product_names:
+                        logger.info(f"Найдено {len(matched_product_names)} совпадений для запроса: {search_query}")
+                        filtered_products = products_df[products_df['name'].isin(matched_product_names)]
+                        
+                        # Получаем полную информацию о товарах
+                        complete_products = []
+                        for _, product in filtered_products.iterrows():
+                            try:
+                                product_details = services.products.fetch_product_details_by_id(product['product_id'])
+                                if product_details:
+                                    complete_products.append(product_details)
+                            except Exception as e:
+                                logger.error(f"Error fetching details for product {product['product_id']}: {e}")
+                        
+                        if complete_products:
+                            # Проверяем структуру данных перед кешированием
+                            valid_products = []
+                            for product in complete_products:
+                                if isinstance(product, dict) and 'name' in product and 'product_id' in product:
+                                    valid_products.append(product)
+                            
+                            if valid_products:
+                                # Кешируем полные результаты поиска
+                                logger.info(f"Кеширование полных результатов поиска для запроса: {search_query}")
+                                redis_service.cache_temporary_data(search_cache_key, valid_products)
+                                filtered_products = pd.DataFrame(valid_products)
+                            else:
+                                logger.warning("Нет валидных продуктов для кеширования")
+                                filtered_products = pd.DataFrame()
+                        else:
+                            logger.warning(f"Не удалось получить полную информацию о товарах для запроса: {search_query}")
+                            filtered_products = pd.DataFrame()
+                    else:
+                        logger.info(f"Совпадений не найдено для запроса: {search_query}")
+                        filtered_products = pd.DataFrame()
             except Exception as e:
                 logger.error(f"Error filtering products: {e}")
                 st.error("Произошла ошибка при поиске товаров. Пожалуйста, попробуйте еще раз.")

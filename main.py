@@ -87,6 +87,15 @@ def login():
                 if session_response.status_code == 200:
                     session_data = session_response.json()
                     streamlit.session_state["session_data"] = session_data
+                    
+                    # Кешируем сессионные данные
+                    logger.info(f"Кеширование сессионных данных для пользователя {email}")
+                    redis_service.cache_temporary_data(
+                        f"session_data:{data['user_id']}",
+                        session_data,
+                        ttl=3600  # 1 час
+                    )
+                    logger.info(f"Сессионные данные успешно закешированы для пользователя {email}")
                 
                 streamlit.success(f"Добро пожаловать, {email}!")
                 

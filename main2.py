@@ -11,6 +11,7 @@ import bcrypt
 from sympy.codegen.ast import continue_
 from datetime import timedelta, datetime, timezone
 import requests
+import logging
 
 from passw import hash_password, verify_password
 import services.users
@@ -27,15 +28,27 @@ registr = services.regist.Registration()
 auth = Authotize()
 redis_service = RedisService()
 API_URL="http://127.0.0.1:8000"
+logger = logging.getLogger(__name__)
 
 
 @app.post("/register")
 def register_user(email: str, password: str):
+    # Проверяем кеш на наличие промежуточных результатов регистрации
+    registration_cache_key = f"registration:{email}"
+    logger.info(f"Проверка кеша регистрации для email: {email}")
+    cached_result = redis_service.get_intermediate_result(registration_cache_key)
+    if cached_result:
+        logger.info(f"Найдены кешированные данные регистрации для email: {email}")
+        return cached_result
+
+    logger.info(f"Начало процесса регистрации для email: {email}")
     users = services.users.get_users()
     if users["email"].isin([email]).any():
+        logger.warning(f"Попытка регистрации с существующим email: {email}")
         raise HTTPException(status_code=400, detail="email already registered")
     
     user_id = registr.registr(pd.DataFrame({"email": [email], "password": [password]}))
+    logger.info(f"Пользователь {email} успешно зарегистрирован с ID: {user_id}")
     
     # Создаем токен для нового пользователя
     access_token_expires = timedelta(minutes=settings.JWT_CONFIG["ACCESS_TOKEN_EXPIRE_MINUTES"])
@@ -44,6 +57,7 @@ def register_user(email: str, password: str):
         settings.JWT_CONFIG["SECRET_KEY"],
         algorithm=settings.JWT_CONFIG["ALGORITHM"]
     )
+    logger.info(f"Создан токен для пользователя {email}")
     
     # Store token in Redis
     redis_service.store_token(
@@ -51,6 +65,7 @@ def register_user(email: str, password: str):
         access_token,
         settings.JWT_CONFIG["ACCESS_TOKEN_EXPIRE_MINUTES"] * 60
     )
+    logger.info(f"Токен сохранен в Redis для пользователя {email}")
     
     # Сохраняем сессионные данные
     session_data = {
@@ -64,13 +79,21 @@ def register_user(email: str, password: str):
         session_data,
         settings.JWT_CONFIG["ACCESS_TOKEN_EXPIRE_MINUTES"] * 60
     )
+    logger.info(f"Сессионные данные сохранены для пользователя {email}")
     
-    return {
+    result = {
         "message": "Registration is successful",
         "access_token": access_token,
         "token_type": "bearer",
         "user_id": str(user_id)
     }
+    
+    # Кешируем промежуточный результат регистрации
+    logger.info(f"Кеширование промежуточных результатов регистрации для {email}")
+    redis_service.cache_intermediate_result(registration_cache_key, result)
+    logger.info(f"Промежуточные результаты регистрации успешно закешированы для {email}")
+    
+    return result
 
 
 @app.post("/token")

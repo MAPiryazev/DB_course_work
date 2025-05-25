@@ -334,6 +334,83 @@ class RedisService:
             except Exception as e:
                 logger.error(f"Error while closing Redis connection: {e}")
 
+    def cache_temporary_data(self, key: str, data: dict, ttl: int = 300):
+        """
+        Кеширование временных данных с коротким TTL
+        :param key: Ключ для кеширования
+        :param data: Данные для кеширования
+        :param ttl: Время жизни в секундах (по умолчанию 5 минут)
+        """
+        try:
+            temp_key = f"temp:{key}"
+            self.redis_client.setex(temp_key, ttl, json.dumps(data))
+            logger.info(f"Временные данные закешированы с ключом {temp_key}")
+        except Exception as e:
+            logger.error(f"Ошибка кеширования временных данных: {e}")
+            raise
+
+    def get_temporary_data(self, key: str) -> dict:
+        """
+        Получение временных данных из кеша
+        :param key: Ключ кешированных данных
+        :return: Данные из кеша или None если данных нет
+        """
+        try:
+            temp_key = f"temp:{key}"
+            data = self.redis_client.get(temp_key)
+            if data:
+                logger.info(f"Получены временные данные по ключу {temp_key}")
+                return json.loads(data)
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка получения временных данных: {e}")
+            raise
+
+    def clear_temporary_data(self, key: str) -> None:
+        """
+        Очистка временных данных из кеша
+        :param key: Ключ кешированных данных
+        """
+        try:
+            temp_key = f"temp:{key}"
+            self.redis_client.delete(temp_key)
+            logger.info(f"Очищены временные данные по ключу {temp_key}")
+        except Exception as e:
+            logger.error(f"Ошибка очистки временных данных: {e}")
+            raise
+
+    def cache_intermediate_result(self, operation_id: str, data: dict, ttl: int = 600):
+        """
+        Кеширование промежуточных результатов операций
+        :param operation_id: ID операции
+        :param data: Данные для кеширования
+        :param ttl: Время жизни в секундах (по умолчанию 10 минут)
+        """
+        try:
+            intermediate_key = f"intermediate:{operation_id}"
+            self.redis_client.setex(intermediate_key, ttl, json.dumps(data))
+            logger.info(f"Промежуточные результаты закешированы с ключом {intermediate_key}")
+        except Exception as e:
+            logger.error(f"Ошибка кеширования промежуточных результатов: {e}")
+            raise
+
+    def get_intermediate_result(self, operation_id: str) -> dict:
+        """
+        Получение промежуточных результатов из кеша
+        :param operation_id: ID операции
+        :return: Данные из кеша или None если данных нет
+        """
+        try:
+            intermediate_key = f"intermediate:{operation_id}"
+            data = self.redis_client.get(intermediate_key)
+            if data:
+                logger.info(f"Получены промежуточные результаты по ключу {intermediate_key}")
+                return json.loads(data)
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка получения промежуточных результатов: {e}")
+            raise
+
     def cleanup_user_sessions(self, user_id: str) -> None:
         """
         Clean up all sessions for a specific user
