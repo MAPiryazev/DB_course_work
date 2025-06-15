@@ -25,5 +25,10 @@ class Authotize():
 
         if (passw == None):
             return False
-        if (bcrypt.checkpw(password.encode("utf-8"), passw.encode("utf-8"))):
-            return True
+            
+        try:
+            # Проверяем хешированный пароль
+            return bcrypt.checkpw(password.encode("utf-8"), passw.encode("utf-8"))
+        except Exception as e:
+            print(f"Error checking password: {e}")
+            return False

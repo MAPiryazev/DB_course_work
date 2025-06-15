@@ -5,6 +5,11 @@ import time
 import services.user
 import services.products
 import services.cart
+import services.orders
+from services.redis_service import RedisService
+
+# Инициализация Redis сервиса
+redis_service = RedisService()
 
 def show_cart_page():
     st.title("Корзина")
@@ -77,6 +82,16 @@ def show_cart_page():
                             services.cart.update_cart_item(user_id, product_id, new_quantity)
                             services.products.reduce_product_stock(product_id, new_quantity)
 
+                        # Создаем новый заказ
+                        order_id = services.orders.create_order(user_id, 0)  # total_amount больше не используется
+                        
+                        # Отправляем уведомление о новом заказе
+                        redis_service.update_order_status(
+                            str(order_id),
+                            "В обработке",
+                            str(user_id)
+                        )
+
                         # Очищаем корзину
                         services.cart.clear_cart(user_id)
 
@@ -96,7 +111,6 @@ def show_cart_page():
             # Кнопка очистки корзины
             if st.button("Очистить корзину"):
                 try:
-
                     # Очищаем корзину
                     services.cart.clear_cart(user_id)
                     st.success("Корзина успешно очищена!")

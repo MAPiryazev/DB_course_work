@@ -55,15 +55,34 @@ def get_product_details_by_id(product_id: int) -> dict:
 
 def add_product_to_cart(user_id: int, product_id: int, quantity: int) -> None:
     print(f"Adding product {product_id} to cart for user {user_id} with quantity {quantity}")
-    query = """
-        INSERT INTO carts (user_id, product_id, quantity, added_date)
-        VALUES (%s, %s, %s, NOW())
-        ON CONFLICT (user_id, product_id) 
-        DO UPDATE SET quantity = carts.quantity + EXCLUDED.quantity;
+    
+    # Сначала проверяем, есть ли уже такой товар в корзине
+    check_query = """
+        SELECT quantity FROM carts 
+        WHERE user_id = %s AND product_id = %s;
     """
+    
     with psycopg2.connect(**DB_CONFIG) as conn:
         with conn.cursor() as cur:
-            cur.execute(query, (user_id, product_id, quantity))
+            cur.execute(check_query, (user_id, product_id))
+            existing_item = cur.fetchone()
+            
+            if existing_item:
+                # Если товар уже есть в корзине, обновляем количество
+                update_query = """
+                    UPDATE carts 
+                    SET quantity = quantity + %s 
+                    WHERE user_id = %s AND product_id = %s;
+                """
+                cur.execute(update_query, (quantity, user_id, product_id))
+            else:
+                # Если товара нет в корзине, добавляем новую запись
+                insert_query = """
+                    INSERT INTO carts (user_id, product_id, quantity, added_date)
+                    VALUES (%s, %s, %s, NOW());
+                """
+                cur.execute(insert_query, (user_id, product_id, quantity))
+            
             conn.commit()
 
 
